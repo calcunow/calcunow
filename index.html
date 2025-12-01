@@ -910,8 +910,13 @@ function finalizeCamReport(event) {
     document.getElementById('cam-timestamp').textContent = new Date().toLocaleString();
     document.getElementById('credit-cam-output').classList.remove('hidden');
 
+    // NEW: Wrap the collected data into a 'details' object to match the reading logic
+    const reportDetailsToSave = {
+        details: data 
+    };
+
     // Store data for saving/exporting
-    document.getElementById('credit-cam-output').dataset.reportDetails = JSON.stringify(data);
+    document.getElementById('credit-cam-output').dataset.reportDetails = JSON.stringify(reportDetailsToSave);
 }
 
 // --- REPORT MANAGEMENT (SAVE, LOAD, EXPORT) ---
