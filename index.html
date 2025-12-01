@@ -447,6 +447,784 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
 
-    <script id="main-script"></script>
+    <script id="main-script">
+	// --- UTILITY FUNCTIONS ---
+
+/**
+ * Formats a number to Indian Rupees (₹) currency style.
+ * @param {number} amount
+ * @returns {string} Formatted currency string
+ */
+function formatCurrency(amount) {
+    if (isNaN(amount) || amount === null) return '₹0.00';
+    return '₹' + Math.abs(amount).toLocaleString('en-IN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
+}
+
+/**
+ * Calculates the difference in days between two date inputs.
+ * @param {string} start A date string (YYYY-MM-DD)
+ * @param {string} end A date string (YYYY-MM-DD)
+ * @returns {number} Number of full days between dates
+ */
+function calculateDaysDifference(start, end) {
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    if (isNaN(startDate) || isNaN(endDate)) return 0;
+    const diffTime = Math.abs(endDate - startDate);
+    // Add 1 day to include both start and end dates if dates are the same
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+}
+
+// --- CORE APP LOGIC ---
+const APP_STATE = {
+    isLoggedIn: false,
+    currentUser: null,
+    savedReports: JSON.parse(localStorage.getItem('wealthCalcReports')) || [],
+    currentTab: 'broken-period',
+    cashFlowMode: 'sales'
+};
+
+// --- AUTHENTICATION & UI SETUP ---
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Check for a "logged-in" state mock
+    const user = localStorage.getItem('currentUser');
+    if (user) {
+        APP_STATE.isLoggedIn = true;
+        APP_STATE.currentUser = JSON.parse(user);
+        showAppScreen();
+        loadSavedReports();
+    }
+
+    // Set up event listeners for main actions
+    setupEventListeners();
+    
+    // Ensure the initial tab is active
+    switchTab(APP_STATE.currentTab);
+    
+    // Set default dates for Cash Flow (e.g., last 30 days)
+    const today = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(today.getDate() - 30);
+    document.getElementById('cf-end-date').value = today.toISOString().split('T')[0];
+    document.getElementById('cf-start-date').value = thirtyDaysAgo.toISOString().split('T')[0];
+});
+
+function setupEventListeners() {
+    // Auth Form Logic
+    document.getElementById('auth-form').addEventListener('submit', handleAuth);
+    document.getElementById('toggle-auth').addEventListener('click', toggleAuthMode);
+    document.getElementById('logout-btn').addEventListener('click', logout);
+    document.getElementById('forgot-password-btn').addEventListener('click', () => alert('Please contact support to reset your password.'));
+
+    // Tab Switching
+    document.querySelectorAll('.tab-button').forEach(button => {
+        button.addEventListener('click', (e) => switchTab(e.target.dataset.tab));
+    });
+
+    // Broken Period Calculator
+    document.getElementById('broken-period-form').addEventListener('submit', calculateBrokenPeriodInterest);
+    document.getElementById('add-broken-row').addEventListener('click', addBrokenPeriodRow);
+    // Use event delegation for dynamically added rows
+    document.getElementById('broken-period-rows').addEventListener('click', (e) => {
+        if (e.target.classList.contains('remove-broken-row') || e.target.parentElement.classList.contains('remove-broken-row')) {
+            const row = e.target.closest('.flex');
+            if (row) row.remove();
+        }
+    });
+
+    // Cash Flow Calculator
+    document.getElementById('cash-flow-form').addEventListener('submit', generateCashFlowStatement);
+    document.getElementById('mode-sales').addEventListener('click', () => switchCashFlowMode('sales'));
+    document.getElementById('mode-income').addEventListener('click', () => switchCashFlowMode('income'));
+    
+    // Credit CAM Module
+    document.getElementById('credit-cam-form').addEventListener('submit', finalizeCamReport);
+    document.getElementById('add-asset-row').addEventListener('click', addAssetRow);
+    document.getElementById('cam-asset-rows').addEventListener('click', (e) => {
+        if (e.target.classList.contains('remove-asset-row') || e.target.parentElement.classList.contains('remove-asset-row')) {
+            const row = e.target.closest('.flex');
+            if (row) row.remove();
+        }
+    });
+
+    // Admin Filters
+    document.querySelectorAll('#report-filter-type, #report-filter-month, #report-filter-year, #report-search').forEach(input => {
+        input.addEventListener('change', loadSavedReports);
+        input.addEventListener('keyup', loadSavedReports);
+    });
+}
+
+function handleAuth(event) {
+    event.preventDefault();
+    const mode = document.getElementById('auth-mode').value;
+    const messageEl = document.getElementById('auth-message');
+    messageEl.textContent = '';
+
+    // Mock Login/Signup Logic
+    const credential = document.getElementById('login-credential')?.value;
+    const password = document.getElementById('login-password')?.value;
+    const signupEmail = document.getElementById('signup-email')?.value;
+    const signupMobile = document.getElementById('signup-mobile')?.value;
+
+    if (mode === 'login' && credential && password) {
+        // Simplified Mock Success
+        APP_STATE.currentUser = { name: 'Admin User', id: '12345', credential: credential };
+        APP_STATE.isLoggedIn = true;
+        localStorage.setItem('currentUser', JSON.stringify(APP_STATE.currentUser));
+        showAppScreen();
+        loadSavedReports();
+    } else if (mode === 'signup' && signupEmail && signupMobile && password) {
+        // Simplified Mock Success
+        APP_STATE.currentUser = { name: 'New User', id: '54321', credential: signupEmail || signupMobile };
+        APP_STATE.isLoggedIn = true;
+        localStorage.setItem('currentUser', JSON.stringify(APP_STATE.currentUser));
+        showAppScreen();
+        loadSavedReports();
+    } else {
+        messageEl.textContent = mode === 'login' ? 'Invalid credentials or missing password.' : 'Please fill all signup fields.';
+        return;
+    }
+}
+
+function toggleAuthMode() {
+    const modeInput = document.getElementById('auth-mode');
+    const loginFields = document.getElementById('login-fields');
+    const signupFields = document.getElementById('signup-fields');
+    const authTitle = document.getElementById('auth-title');
+    const toggleBtn = document.getElementById('toggle-auth');
+    const submitBtn = document.getElementById('auth-submit-btn');
+
+    if (modeInput.value === 'login') {
+        modeInput.value = 'signup';
+        authTitle.textContent = 'Sign Up for Wealth Calc';
+        submitBtn.textContent = 'Sign Up';
+        toggleBtn.textContent = 'Existing User? Log In';
+        loginFields.classList.add('hidden');
+        signupFields.classList.remove('hidden');
+        document.getElementById('forgot-password-btn').classList.add('hidden');
+    } else {
+        modeInput.value = 'login';
+        authTitle.textContent = 'Login to Wealth Calc';
+        submitBtn.textContent = 'Login';
+        toggleBtn.textContent = 'New User? Sign Up';
+        loginFields.classList.remove('hidden');
+        signupFields.classList.add('hidden');
+        document.getElementById('forgot-password-btn').classList.remove('hidden');
+    }
+    document.getElementById('auth-message').textContent = '';
+}
+
+function showAppScreen() {
+    document.getElementById('auth-screen').classList.add('hidden');
+    document.getElementById('app-container').classList.remove('hidden');
+    document.getElementById('user-info').textContent = `Logged in as: ${APP_STATE.currentUser.name}`;
+    document.getElementById('user-info').classList.remove('hidden');
+}
+
+function logout() {
+    APP_STATE.isLoggedIn = false;
+    APP_STATE.currentUser = null;
+    localStorage.removeItem('currentUser');
+    document.getElementById('auth-screen').classList.remove('hidden');
+    document.getElementById('app-container').classList.add('hidden');
+    document.getElementById('auth-mode').value = 'login'; // Reset to default login view
+    toggleAuthMode(); // Ensure correct login fields are showing
+}
+
+// --- TAB SWITCHING ---
+
+function switchTab(tabName) {
+    APP_STATE.currentTab = tabName;
+    
+    // Deactivate all tab buttons and content
+    document.querySelectorAll('.tab-button').forEach(btn => {
+        btn.classList.remove('active', 'bg-indigo-600', 'text-white', 'border-indigo-600');
+        btn.classList.add('text-gray-500', 'border-transparent');
+    });
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.add('hidden');
+    });
+
+    // Activate the selected tab button and content
+    const activeBtn = document.querySelector(`.tab-button[data-tab="${tabName}"]`);
+    if (activeBtn) {
+        activeBtn.classList.add('active', 'bg-indigo-600', 'text-white', 'border-indigo-600');
+        activeBtn.classList.remove('text-gray-500', 'border-transparent');
+    }
+    const activeContent = document.getElementById(tabName);
+    if (activeContent) {
+        activeContent.classList.remove('hidden');
+    }
+}
+
+// --- BROKEN-PERIOD INTEREST CALCULATOR ---
+
+function addBrokenPeriodRow() {
+    const container = document.getElementById('broken-period-rows');
+    const newRow = document.createElement('div');
+    newRow.className = 'flex space-x-4 items-end';
+    newRow.innerHTML = `
+        <div class="flex-1">
+            <label class="block text-sm font-medium text-gray-700">Principal Amount (₹)</label>
+            <input type="number" step="0.01" min="0" name="principal" required class="mt-1 block w-full p-2 border rounded-md">
+        </div>
+        <div class="w-1/4">
+            <label class="block text-sm font-medium text-gray-700">Annual Rate (%)</label>
+            <input type="number" step="0.01" min="0" name="rate" required class="mt-1 block w-full p-2 border rounded-md">
+        </div>
+        <div class="w-1/4">
+            <label class="block text-sm font-medium text-gray-700">Days</label>
+            <input type="number" min="1" name="days" required class="mt-1 block w-full p-2 border rounded-md">
+        </div>
+        <button type="button" class="remove-broken-row text-red-500 hover:text-red-700 text-2xl pb-1" title="Remove Row">
+            &times;
+        </button>
+    `;
+    container.appendChild(newRow);
+}
+
+function calculateBrokenPeriodInterest(event) {
+    event.preventDefault();
+
+    const rows = document.getElementById('broken-period-rows').querySelectorAll('.flex.space-x-4');
+    let totalInterest = 0;
+    const detailEl = document.getElementById('broken-period-detail');
+    detailEl.innerHTML = '';
+
+    rows.forEach((row, index) => {
+        const principal = parseFloat(row.querySelector('[name="principal"]').value) || 0;
+        const rate = parseFloat(row.querySelector('[name="rate"]').value) || 0;
+        const days = parseInt(row.querySelector('[name="days"]').value) || 0;
+
+        if (principal > 0 && rate > 0 && days > 0) {
+            // Simple Interest Formula: P * R * T / 100, where T is Days/365
+            const interest = (principal * rate * days) / (100 * 365);
+            totalInterest += interest;
+
+            detailEl.innerHTML += `
+                <p><strong>Period ${index + 1}:</strong> Principal ${formatCurrency(principal)} @ ${rate.toFixed(2)}% for ${days} days = ${formatCurrency(interest)}</p>
+            `;
+        }
+    });
+
+    // Update Output
+    document.getElementById('total-broken-interest').textContent = formatCurrency(totalInterest);
+    document.getElementById('broken-timestamp').textContent = new Date().toLocaleString();
+    document.getElementById('broken-period-output').classList.remove('hidden');
+
+    // Store data for saving/exporting
+    document.getElementById('broken-period-output').dataset.totalInterest = totalInterest.toFixed(2);
+    document.getElementById('broken-period-output').dataset.reportDetails = JSON.stringify(
+        Array.from(rows).map(row => ({
+            P: parseFloat(row.querySelector('[name="principal"]').value) || 0,
+            R: parseFloat(row.querySelector('[name="rate"]').value) || 0,
+            D: parseInt(row.querySelector('[name="days"]').value) || 0,
+            Interest: (parseFloat(row.querySelector('[name="principal"]').value) || 0) * (parseFloat(row.querySelector('[name="rate"]').value) || 0) * (parseInt(row.querySelector('[name="days"]').value) || 0) / (100 * 365)
+        }))
+    );
+}
+
+// --- CASH FLOW STATEMENT TOOL ---
+
+function switchCashFlowMode(mode) {
+    APP_STATE.cashFlowMode = mode;
+    
+    // Update button styles
+    document.querySelectorAll('.cash-flow-mode-btn').forEach(btn => {
+        btn.classList.remove('active', 'bg-indigo-500', 'text-white');
+        btn.classList.add('bg-gray-200', 'text-gray-800');
+    });
+    document.getElementById(`mode-${mode}`).classList.add('active', 'bg-indigo-500', 'text-white');
+    document.getElementById(`mode-${mode}`).classList.remove('bg-gray-200', 'text-gray-800');
+
+    // Toggle fields visibility
+    document.getElementById('cf-sales-fields').classList.toggle('hidden', mode !== 'sales');
+    document.getElementById('cf-income-fields').classList.toggle('hidden', mode !== 'income');
+    document.getElementById('cf-mode-display').textContent = mode === 'sales' ? 'Sales Basis' : 'Income Basis';
+}
+
+function generateCashFlowStatement(event) {
+    event.preventDefault();
+
+    const startDate = document.getElementById('cf-start-date').value;
+    const endDate = document.getElementById('cf-end-date').value;
+    let workingDays = parseInt(document.getElementById('cf-working-days').value);
+    
+    if (!workingDays || workingDays <= 0) {
+        workingDays = calculateDaysDifference(startDate, endDate);
+    }
+
+    const mode = APP_STATE.cashFlowMode;
+    const summaryBody = document.getElementById('cash-flow-summary-body');
+    summaryBody.innerHTML = '';
+    let rows = [];
+
+    // Common period details
+    rows.push({ label: 'Period Start Date', value: startDate, isHeader: false });
+    rows.push({ label: 'Period End Date', value: endDate, isHeader: false });
+    rows.push({ label: 'Total Working/Analysis Days', value: workingDays, isHeader: true });
+    
+    let totalIncome = 0;
+    let totalExpenses = 0;
+    
+    if (mode === 'sales') {
+        const salesPerDay = parseFloat(document.getElementById('cf-sales-per-day').value) || 0;
+        const marginPercent = parseFloat(document.getElementById('cf-margin-percent').value) || 0;
+        const directExpenses = parseFloat(document.getElementById('cf-direct-expenses').value) || 0;
+        const electricity = parseFloat(document.getElementById('cf-electricity').value) || 0;
+        const rent = parseFloat(document.getElementById('cf-rent').value) || 0;
+        const indirectExpenses = parseFloat(document.getElementById('cf-indirect-expenses').value) || 0;
+        
+        // Income Calculation
+        const totalSales = salesPerDay * workingDays;
+        const grossIncome = totalSales * (marginPercent / 100);
+        
+        totalIncome = grossIncome;
+        totalExpenses = directExpenses + electricity + rent + indirectExpenses;
+
+        // Rows for Sales Basis
+        rows.push({ label: 'Total Sales/Turnover', value: formatCurrency(totalSales), isHeader: false });
+        rows.push({ label: 'Margin Percentage', value: `${marginPercent.toFixed(2)}%`, isHeader: false });
+        rows.push({ label: 'A. Gross Operating Income (Net Margin)', value: formatCurrency(grossIncome), isHeader: true, className: 'bg-green-50' });
+        
+        rows.push({ label: 'B. Operating Expenses', value: '', isHeader: true, className: 'bg-red-50' });
+        rows.push({ label: 'Direct Expenses (Per Period/Total)', value: formatCurrency(directExpenses), isHeader: false });
+        rows.push({ label: 'Electricity', value: formatCurrency(electricity), isHeader: false });
+        rows.push({ label: 'Rent', value: formatCurrency(rent), isHeader: false });
+        rows.push({ label: 'Indirect Expenses', value: formatCurrency(indirectExpenses), isHeader: false });
+        
+    } else { // income mode
+        const wagePerDay = parseFloat(document.getElementById('cf-wage-per-day').value) || 0;
+        const householdExpenses = parseFloat(document.getElementById('cf-household-expenses').value) || 0;
+        const otherExpenses = parseFloat(document.getElementById('cf-other-expenses').value) || 0;
+        const existingEmi = parseFloat(document.getElementById('cf-existing-emi').value) || 0;
+        const proposedEmi = parseFloat(document.getElementById('cf-proposed-emi').value) || 0;
+
+        // Income Calculation
+        const totalWages = wagePerDay * workingDays;
+        totalIncome = totalWages;
+        totalExpenses = householdExpenses + otherExpenses + existingEmi + proposedEmi;
+        
+        // Rows for Income Basis
+        rows.push({ label: 'A. Total Wages/Salary Income', value: formatCurrency(totalWages), isHeader: true, className: 'bg-green-50' });
+        
+        rows.push({ label: 'B. Total Household & Other Expenses', value: '', isHeader: true, className: 'bg-red-50' });
+        rows.push({ label: 'Household Expenses', value: formatCurrency(householdExpenses), isHeader: false });
+        rows.push({ label: 'Other Expenses', value: formatCurrency(otherExpenses), isHeader: false });
+        rows.push({ label: 'Existing Loan EMI', value: formatCurrency(existingEmi), isHeader: false });
+        rows.push({ label: 'Proposed Loan EMI (for DSR/Debt Service Coverage Ratio)', value: formatCurrency(proposedEmi), isHeader: false });
+    }
+    
+    // Final Calculation
+    const netCashFlow = totalIncome - totalExpenses;
+    const dsr = totalIncome > 0 ? (totalExpenses / totalIncome) * 100 : 0; // Debt Service Ratio (or expense ratio here)
+    
+    // Add Summary Rows
+    rows.push({ label: 'C. Total Outflow/Expenses (B)', value: formatCurrency(totalExpenses), isHeader: true, className: 'bg-red-100' });
+    rows.push({ label: 'D. Net Cash Flow (A - C)', value: formatCurrency(netCashFlow), isHeader: true, className: netCashFlow >= 0 ? 'bg-indigo-100 text-indigo-800 text-lg' : 'bg-red-300 text-red-800 text-lg' });
+    rows.push({ label: 'DSR/Expense Ratio (C/A)', value: `${dsr.toFixed(2)}%`, isHeader: true, className: 'text-sm' });
+
+    // Populate table
+    rows.forEach(row => {
+        const tr = document.createElement('tr');
+        const className = row.isHeader ? 'font-bold' : '';
+        const bgClass = row.className || (row.isHeader ? 'bg-gray-100' : 'bg-white');
+        
+        tr.className = `${bgClass} ${row.isHeader ? 'text-gray-700' : 'text-gray-600'}`;
+        
+        tr.innerHTML = `
+            <td class="px-6 py-2 whitespace-nowrap text-sm ${className}">${row.label}</td>
+            <td class="px-6 py-2 whitespace-nowrap text-sm text-right ${className}">${row.value}</td>
+        `;
+        summaryBody.appendChild(tr);
+    });
+
+    // Update Output
+    document.getElementById('cf-timestamp').textContent = new Date().toLocaleString();
+    document.getElementById('cash-flow-output').classList.remove('hidden');
+
+    // Store data for saving/exporting
+    document.getElementById('cash-flow-output').dataset.reportDetails = JSON.stringify({ mode, workingDays, totalIncome, totalExpenses, netCashFlow, dsr, startDate, endDate, rawRows: rows });
+}
+
+// --- CREDIT CAM VERIFICATION MODULE ---
+
+function addAssetRow() {
+    const container = document.getElementById('cam-asset-rows');
+    const newRow = document.createElement('div');
+    newRow.className = 'flex space-x-3 items-end';
+    newRow.innerHTML = `
+        <div class="flex-1">
+            <label class="block text-sm font-medium text-gray-700">Asset Name</label>
+            <input type="text" name="asset_name" class="mt-1 block w-full p-2 border rounded-md">
+        </div>
+        <div class="w-1/4">
+            <label class="block text-sm font-medium text-gray-700">Status</label>
+            <select name="asset_status" class="mt-1 block w-full p-2 border rounded-md">
+                <option>Verified</option>
+                <option>Not Found</option>
+                <option>Discrepancy</option>
+            </select>
+        </div>
+        <button type="button" class="remove-asset-row text-red-500 hover:text-red-700 text-2xl pb-1">&times;</button>
+    `;
+    container.appendChild(newRow);
+}
+
+function finalizeCamReport(event) {
+    event.preventDefault();
+
+    const form = event.target;
+    const data = {
+        verificationTypes: Array.from(form.querySelector('#cam-verification-types').selectedOptions).map(opt => opt.value),
+        cibilScore: form.querySelector('#cam-cibil-score').value,
+        cibilFlags: Array.from(form.querySelector('#cam-cibil-flags').selectedOptions).map(opt => opt.value),
+        
+        // Collect dynamic assets
+        assets: Array.from(document.getElementById('cam-asset-rows').querySelectorAll('.flex')).map(row => ({
+            name: row.querySelector('[name="asset_name"]').value,
+            status: row.querySelector('[name="asset_status"]').value,
+        })),
+        
+        // Income
+        incomeSource: form.querySelector('#cam-income-source').value,
+        incomeValue: formatCurrency(parseFloat(form.querySelector('#cam-income-value').value) || 0),
+        incomeRemarks: form.querySelector('#cam-income-remarks').value,
+        
+        // Guarantor
+        guarantor: {
+            name: form.querySelector('#cam-g-name').value,
+            relation: form.querySelector('#cam-g-relation').value,
+            address: form.querySelector('#cam-g-address').value,
+            contact: form.querySelector('#cam-g-contact').value,
+            cibil: form.querySelector('#cam-g-cibil').value,
+            markers: form.querySelector('#cam-g-markers').value,
+        }
+    };
+    
+    // Update Output
+    document.getElementById('cam-timestamp').textContent = new Date().toLocaleString();
+    document.getElementById('credit-cam-output').classList.remove('hidden');
+
+    // Store data for saving/exporting
+    document.getElementById('credit-cam-output').dataset.reportDetails = JSON.stringify(data);
+}
+
+// --- REPORT MANAGEMENT (SAVE, LOAD, EXPORT) ---
+
+function saveReport(tabId) {
+    if (!APP_STATE.currentUser) {
+        alert('You must be logged in to save a report.');
+        return;
+    }
+
+    let reportData = {};
+    let type = '';
+    let summary = '';
+    const timestamp = new Date().toLocaleString();
+
+    if (tabId === 'broken-period') {
+        const outputEl = document.getElementById('broken-period-output');
+        if (outputEl.classList.contains('hidden')) {
+            alert('Please calculate the interest first.');
+            return;
+        }
+        reportData.details = JSON.parse(outputEl.dataset.reportDetails);
+        reportData.totalInterest = parseFloat(outputEl.dataset.totalInterest);
+        type = 'broken-period';
+        summary = `Total Interest: ${formatCurrency(reportData.totalInterest)}`;
+    } else if (tabId === 'cash-flow') {
+        const outputEl = document.getElementById('cash-flow-output');
+        if (outputEl.classList.contains('hidden')) {
+            alert('Please generate the statement first.');
+            return;
+        }
+        reportData = JSON.parse(outputEl.dataset.reportDetails);
+        type = `cash-flow-${reportData.mode}`;
+        summary = `Net Flow: ${formatCurrency(reportData.netCashFlow)}. DSR: ${reportData.dsr.toFixed(2)}%`;
+    } else if (tabId === 'credit-cam') {
+        const outputEl = document.getElementById('credit-cam-output');
+        if (outputEl.classList.contains('hidden')) {
+            alert('Please finalize the verification report first.');
+            return;
+        }
+        reportData.details = JSON.parse(outputEl.dataset.reportDetails);
+        type = 'credit-cam';
+        summary = `CIBIL: ${reportData.details.cibilScore}. Income: ${reportData.details.incomeValue}`;
+    } else {
+        return;
+    }
+
+    const report = {
+        id: Date.now(),
+        type: type,
+        user: APP_STATE.currentUser.name,
+        timestamp: timestamp,
+        data: reportData,
+        summary: summary,
+    };
+
+    APP_STATE.savedReports.push(report);
+    localStorage.setItem('wealthCalcReports', JSON.stringify(APP_STATE.savedReports));
+    alert(`Report of type '${type}' saved successfully!`);
+    loadSavedReports();
+}
+
+function loadSavedReports() {
+    const tableBody = document.getElementById('saved-reports-table-body');
+    tableBody.innerHTML = '';
+    
+    const filterType = document.getElementById('report-filter-type').value;
+    const filterMonth = parseInt(document.getElementById('report-filter-month').value);
+    const filterYear = parseInt(document.getElementById('report-filter-year').value);
+    const search = document.getElementById('report-search').value.toLowerCase();
+
+    const filteredReports = APP_STATE.savedReports.filter(report => {
+        const reportDate = new Date(report.timestamp);
+        
+        // Type filter
+        if (filterType && report.type !== filterType) return false;
+        
+        // Month filter
+        if (filterMonth && (reportDate.getMonth() + 1) !== filterMonth) return false;
+        
+        // Year filter
+        if (filterYear && reportDate.getFullYear() !== filterYear) return false;
+        
+        // Search filter
+        if (search && !(report.user.toLowerCase().includes(search) || report.summary.toLowerCase().includes(search) || JSON.stringify(report.data).toLowerCase().includes(search))) return false;
+        
+        return true;
+    });
+
+    if (filteredReports.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">No reports found matching criteria.</td></tr>';
+        return;
+    }
+
+    filteredReports.forEach(report => {
+        const tr = document.createElement('tr');
+        tr.className = 'bg-white hover:bg-gray-50';
+        tr.innerHTML = `
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${report.type.replace('-', ' ').toUpperCase()}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${report.user}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${report.timestamp}</td>
+            <td class="px-6 py-4 text-sm text-gray-500">${report.summary}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                <button onclick="viewReportDetails(${report.id})" class="text-indigo-600 hover:text-indigo-900">View</button>
+                <button onclick="exportReportById(${report.id}, 'pdf')" class="text-red-600 hover:text-red-900">PDF</button>
+                <button onclick="deleteReport(${report.id})" class="text-red-400 hover:text-red-600">Delete</button>
+            </td>
+        `;
+        tableBody.appendChild(tr);
+    });
+}
+
+function viewReportDetails(reportId) {
+    const report = APP_STATE.savedReports.find(r => r.id === reportId);
+    if (report) {
+        alert(`Report Details for ID ${reportId}:\n\nType: ${report.type}\nUser: ${report.user}\nTimestamp: ${report.timestamp}\nSummary: ${report.summary}\n\nFull Data:\n${JSON.stringify(report.data, null, 2)}`);
+    }
+}
+
+function deleteReport(reportId) {
+    if (confirm('Are you sure you want to delete this report?')) {
+        APP_STATE.savedReports = APP_STATE.savedReports.filter(r => r.id !== reportId);
+        localStorage.setItem('wealthCalcReports', JSON.stringify(APP_STATE.savedReports));
+        loadSavedReports();
+        alert('Report deleted.');
+    }
+}
+
+function exportReportById(reportId, format) {
+    const report = APP_STATE.savedReports.find(r => r.id === reportId);
+    if (report) {
+        // Mock the required structure for the generic export function
+        const mockElement = {
+            dataset: {
+                reportDetails: JSON.stringify(report.data),
+                totalInterest: report.data.totalInterest // For broken-period only
+            }
+        };
+        exportReport(report.type, format, mockElement, report.timestamp, report.user);
+    }
+}
+
+/**
+ * Handles PDF and Excel exports using external libraries (jsPDF, XLSX)
+ * @param {string} tabId The type of report (broken-period, cash-flow-sales, cash-flow-income, credit-cam)
+ * @param {string} format 'pdf' or 'excel'
+ * @param {HTMLElement} [outputEl=null] The specific output element (optional, used for current export)
+ * @param {string} [timestamp=null] Timestamp (optional, used for saved report export)
+ * @param {string} [userName=null] User name (optional, used for saved report export)
+ */
+function exportReport(tabId, format, outputEl = null, timestamp = null, userName = null) {
+    // Get data from the current tab output if not exporting a saved report
+    if (!outputEl) {
+        outputEl = document.getElementById(tabId + '-output') || document.getElementById(tabId);
+        if (outputEl.classList.contains('hidden') && tabId !== 'credit-cam') {
+            alert('Please calculate the results before exporting.');
+            return;
+        }
+    }
+    
+    // Fallback timestamp and user
+    const reportTimestamp = timestamp || new Date().toLocaleString();
+    const user = userName || APP_STATE.currentUser?.name || 'Guest';
+
+    let reportTitle = '';
+    let reportData = null;
+
+    try {
+        if (tabId.startsWith('broken-period')) {
+            reportTitle = 'Broken-Period Interest Report';
+            const details = JSON.parse(outputEl.dataset.reportDetails);
+            const totalInterest = outputEl.dataset.totalInterest;
+            reportData = { details, totalInterest, type: 'broken-period' };
+        } else if (tabId.startsWith('cash-flow')) {
+            reportTitle = `Cash Flow Statement (${tabId.includes('sales') ? 'Sales Basis' : 'Income Basis'})`;
+            reportData = JSON.parse(outputEl.dataset.reportDetails);
+            reportData.type = tabId;
+        } else if (tabId.startsWith('credit-cam')) {
+            reportTitle = 'Credit CAM Verification Report';
+            reportData = JSON.parse(outputEl.dataset.reportDetails);
+            reportData.type = 'credit-cam';
+        } else {
+            alert('Unknown report type for export.');
+            return;
+        }
+    } catch (e) {
+        alert('Error preparing report data for export.');
+        console.error(e);
+        return;
+    }
+
+    const filename = `${tabId.replace('-', '_')}_${new Date().toISOString().slice(0, 10)}`;
+
+    if (format === 'pdf') {
+        exportToPDF(reportTitle, reportData, reportTimestamp, user, filename);
+    } else if (format === 'excel') {
+        exportToExcel(reportTitle, reportData, reportTimestamp, user, filename);
+    }
+}
+
+function exportToPDF(title, data, timestamp, user, filename) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    let y = 10;
+
+    // Header
+    doc.setFontSize(18);
+    doc.text(title, 10, y);
+    y += 7;
+    doc.setFontSize(10);
+    doc.text(`User: ${user} | Date: ${timestamp}`, 10, y);
+    y += 10;
+
+    if (data.type === 'broken-period') {
+        const body = data.details.map(d => [
+            formatCurrency(d.P),
+            `${d.R.toFixed(2)}%`,
+            d.D,
+            formatCurrency(d.Interest)
+        ]);
+        
+        doc.autoTable({
+            startY: y,
+            head: [['Principal', 'Rate', 'Days', 'Interest Calculated']],
+            body: body,
+            theme: 'striped',
+        });
+        
+        y = doc.autoTable.previous.finalY + 5;
+        doc.setFontSize(12);
+        doc.text(`Total Broken Interest: ${formatCurrency(data.totalInterest)}`, 10, y);
+
+    } else if (data.type.startsWith('cash-flow')) {
+        // Cash Flow reports use a flattened array for easy table generation
+        const headerRows = data.rawRows || [];
+        const body = headerRows.map(row => [row.label, row.value]);
+
+        doc.autoTable({
+            startY: y,
+            head: [['Description', 'Value']],
+            body: body,
+            theme: 'striped',
+            columnStyles: { 1: { halign: 'right' } }
+        });
+
+    } else if (data.type === 'credit-cam') {
+        // CAM report is complex, use structured text and simple tables
+        doc.setFontSize(12);
+        doc.text('General & CIBIL', 10, y); y += 5;
+        doc.text(`CIBIL Score: ${data.details.cibilScore}`, 10, y); y += 5;
+        doc.text(`Flags: ${data.details.cibilFlags.join(', ')}`, 10, y); y += 5;
+
+        doc.text('Asset Verification', 10, y); y += 5;
+        const assetBody = data.details.assets.map(a => [a.name, a.status]);
+        doc.autoTable({
+            startY: y,
+            head: [['Asset Name', 'Status']],
+            body: assetBody,
+            theme: 'grid',
+        });
+        y = doc.autoTable.previous.finalY + 5;
+
+        doc.text('Income Verification', 10, y); y += 5;
+        doc.text(`Source: ${data.details.incomeSource} | Monthly Value: ${data.details.incomeValue}`, 10, y); y += 5;
+        doc.text(`Remarks: ${data.details.incomeRemarks}`, 10, y); y += 5;
+    }
+
+    doc.save(`${filename}.pdf`);
+}
+
+function exportToExcel(title, data, timestamp, user, filename) {
+    let ws_data = [];
+    
+    // Header Row
+    ws_data.push([title, '', '', '', `User: ${user}`, `Date: ${timestamp}`]);
+    ws_data.push([]); // blank row
+
+    if (data.type === 'broken-period') {
+        ws_data.push(['Principal', 'Rate (%)', 'Days', 'Interest Calculated']);
+        data.details.forEach(d => {
+            ws_data.push([d.P, d.R, d.D, d.Interest]);
+        });
+        ws_data.push([]);
+        ws_data.push(['Total Broken Interest', data.totalInterest]);
+        
+    } else if (data.type.startsWith('cash-flow')) {
+        ws_data.push(['Cash Flow Statement']);
+        ws_data.push(['Description', 'Value']);
+        const headerRows = data.rawRows || [];
+        headerRows.forEach(row => {
+            ws_data.push([row.label, row.value.replace('₹', '').replace(/,/g, '')]);
+        });
+
+    } else if (data.type === 'credit-cam') {
+        ws_data.push(['Credit CAM Verification Report']);
+        ws_data.push(['Section', 'Detail', 'Value']);
+        ws_data.push(['General & CIBIL', 'CIBIL Score', data.details.cibilScore]);
+        ws_data.push(['General & CIBIL', 'CIBIL Flags', data.details.cibilFlags.join(', ')]);
+        ws_data.push([]);
+        ws_data.push(['Asset Verification', 'Asset Name', 'Status']);
+        data.details.assets.forEach(a => {
+            ws_data.push(['Asset Verification', a.name, a.status]);
+        });
+        ws_data.push([]);
+        ws_data.push(['Income Verification', 'Source', data.details.incomeSource]);
+        ws_data.push(['Income Verification', 'Monthly Value', data.details.incomeValue]);
+        ws_data.push(['Income Verification', 'Remarks', data.details.incomeRemarks]);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(ws_data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, title.substring(0, 30));
+    XLSX.writeFile(wb, `${filename}.xlsx`);
+}</script>
 </body>
 </html>
