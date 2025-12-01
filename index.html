@@ -127,7 +127,10 @@
                 </nav>
             </div>
 
-            <div id="broken-period" class="tab-content">
+<div class="mb-4 p-6 bg-white shadow rounded-lg">
+    <label for="customer-name-input" class="block text-sm font-medium text-gray-700">Customer/Borrower Name</label>
+    <input type="text" id="customer-name-input" class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" placeholder="Enter Customer Name">
+</div>
                 <div class="report-section">
                     <h2 class="text-xl font-bold mb-4 text-indigo-600">Broken-Period Interest Calculator</h2>
                     <form id="broken-period-form" class="space-y-4">
@@ -570,13 +573,20 @@ function handleAuth(event) {
     const signupEmail = document.getElementById('signup-email')?.value;
     const signupMobile = document.getElementById('signup-mobile')?.value;
 
+const MOCK_PASSWORD = 'admin'; // <-- Set your login password here
+
     if (mode === 'login' && credential && password) {
-        // Simplified Mock Success
-        APP_STATE.currentUser = { name: 'Admin User', id: '12345', credential: credential };
-        APP_STATE.isLoggedIn = true;
-        localStorage.setItem('currentUser', JSON.stringify(APP_STATE.currentUser));
-        showAppScreen();
-        loadSavedReports();
+        if (password === MOCK_PASSWORD) { // <-- ONLY LOGS IN IF PASSWORD MATCHES
+            // Successful Login
+            APP_STATE.currentUser = { name: 'Admin User', id: '12345', credential: credential };
+            APP_STATE.isLoggedIn = true;
+            localStorage.setItem('currentUser', JSON.stringify(APP_STATE.currentUser));
+            showAppScreen();
+            loadSavedReports();
+        } else {
+            // Failed Login
+            messageEl.textContent = 'Invalid password.';
+        }
     } else if (mode === 'signup' && signupEmail && signupMobile && password) {
         // Simplified Mock Success
         APP_STATE.currentUser = { name: 'New User', id: '54321', credential: signupEmail || signupMobile };
@@ -1067,6 +1077,14 @@ function exportReportById(reportId, format) {
  * @param {string} [timestamp=null] Timestamp (optional, used for saved report export)
  * @param {string} [userName=null] User name (optional, used for saved report export)
  */
+/**
+ * Handles PDF and Excel exports using external libraries (jsPDF, XLSX)
+ * @param {string} tabId The type of report (broken-period, cash-flow-sales, cash-flow-income, credit-cam)
+ * @param {string} format 'pdf' or 'excel'
+ * @param {HTMLElement} [outputEl=null] The specific output element (optional, used for current export)
+ * @param {string} [timestamp=null] Timestamp (optional, used for saved report export)
+ * @param {string} [userName=null] User name (optional, used for saved report export)
+ */
 function exportReport(tabId, format, outputEl = null, timestamp = null, userName = null) {
     // Get data from the current tab output if not exporting a saved report
     if (!outputEl) {
@@ -1078,8 +1096,11 @@ function exportReport(tabId, format, outputEl = null, timestamp = null, userName
     }
     
     // Fallback timestamp and user
+    const customerName = document.getElementById('customer-name-input').value.trim(); // <-- NEW: Get Customer Name
+    const customerDisplay = customerName || 'N/A'; // Default value if field is empty
+
     const reportTimestamp = timestamp || new Date().toLocaleString();
-    const user = userName || APP_STATE.currentUser?.name || 'Guest';
+    const user = userName || APP_STATE.currentUser?.name || 'Admin';
 
     let reportTitle = '';
     let reportData = null;
@@ -1096,6 +1117,7 @@ function exportReport(tabId, format, outputEl = null, timestamp = null, userName
             reportData.type = tabId;
         } else if (tabId.startsWith('credit-cam')) {
             reportTitle = 'Credit CAM Verification Report';
+            // NOTE: data is already nested under 'details' due to previous fix
             reportData = JSON.parse(outputEl.dataset.reportDetails);
             reportData.type = 'credit-cam';
         } else {
@@ -1111,9 +1133,11 @@ function exportReport(tabId, format, outputEl = null, timestamp = null, userName
     const filename = `${tabId.replace('-', '_')}_${new Date().toISOString().slice(0, 10)}`;
 
     if (format === 'pdf') {
-        exportToPDF(reportTitle, reportData, reportTimestamp, user, filename);
+        // <-- NEW ARGUMENT: customerDisplay
+        exportToPDF(reportTitle, reportData, reportTimestamp, user, filename, customerDisplay); 
     } else if (format === 'excel') {
-        exportToExcel(reportTitle, reportData, reportTimestamp, user, filename);
+        // <-- NEW ARGUMENT: customerDisplay
+        exportToExcel(reportTitle, reportData, reportTimestamp, user, filename, customerDisplay);
     }
 }
 
